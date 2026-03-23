@@ -249,36 +249,87 @@
       const folder = zip.folder(folderName);
       if (!folder) return;
 
-      // 1. הגדרת רשימת הקטגוריות הקבועות (ואיסוף קטגוריות נוספות אם הלקוח הוסיף משהו חריג)
       const baseCategories = ["דלק", "נסיעות", "מסעדות וכיבוד", "משרד ותקשורת", "תוכנה ודיגיטל", "רכב", "ציוד משרדי", "חשמל", "כללי"];
       const existingCategories = receiptsList.map(r => r.category || "כללי");
       const allCategories = Array.from(new Set([...baseCategories, ...existingCategories]));
 
-      // 2. בניית כותרות העמודות של האקסל (CSV)
       let csvContent = "\uFEFFשם ספק,תאריך,ח.פ / עוסק,מספר קבלה,מספר הקצאה,סכום כולל מע\"מ,סכום ללא מע\"מ,סכום מע\"מ,";
-      csvContent += allCategories.join(",") + "\n"; // הוספת עמודות הקטגוריות
+      csvContent += allCategories.join(",") + "\n";
 
-      // 3. ריצה על כל קבלה ובניית השורה שלה בטבלה
+      // משתנים לשמירת הסכומים של שורת הסך-הכל
+      let sumTotal = 0;
+      let sumNoVat = 0;
+      let sumVat = 0;
+      let catSums: Record<string, number> = {};
+
       for (let i = 0; i < receiptsList.length; i++) {
         const r = receiptsList[i];
         
-        // חישובים מספריים בטוחים
         const total = parseFloat(r.totalAmount) || 0;
         const vat = parseFloat(r.vatAmount) || 0;
-        const noVat = total - vat; // סכום ללא מע"מ
+        const noVat = total - vat;
 
-        // בניית תחילת השורה עם הנתונים הכלליים
+        // הוספה לסכום הכולל
+        sumTotal += total;
+        sumVat += vat;
+        sumNoVat += noVat;
+
+        const itemCategory = (r.category || "כללי").trim();
+        catSums[itemCategory] = (catSums[itemCategory] || 0) + total; // הוספה לסכום הקטגוריה
+
         let row = `"${r.supplierName || ""}","${r.date || ""}","${r.businessId || ""}","${r.invoiceNumber || ""}","${r.authorizationNumber || ""}","${total.toFixed(2)}","${noVat.toFixed(2)}","${vat.toFixed(2)}"`;
 
-        // פריסת הסכום לעמודת הקטגוריה המתאימה
-        const itemCategory = (r.category || "כללי").trim();
         for (const cat of allCategories) {
           if (cat === itemCategory) {
-            row += `,"${total.toFixed(2)}"`; // הסכום נרשם תחת הקטגוריה שלו
+            row += `,"${total.toFixed(2)}"`;
           } else {
-            row += `,""`; // תא ריק בשאר הקטגוריות
+            row += `,""`;
           }
         }
+
+        csvContent += row + "\n";
+
+        if (r.imageUrl) {
+          try {
+            const response = await fetch(r.imageUrl);
+            const blob = await response.blob();
+            const ext = r.fileType === "application/pdf" ? "pdf" : "jpg";
+            folder.file(`Receipt_${i + 1}_${(r.supplierName || "unknown").replace(/[^a-zA-Zא-ת0-9]/g, '')}.${ext}`, blob);
+          } catch (err) { console.error("Failed fetching image", err); }
+        }
+      }
+
+      // --- הוספת שורת סך הכל ---
+      let totalRow = `"סה""כ","","","","","${sumTotal.toFixed(2)}","${sumNoVat.toFixed(2)}","${sumVat.toFixed(2)}"`;
+      for (const cat of allCategories) {
+        totalRow += `,"${(catSums[cat] || 0).toFixed(2)}"`;
+      }
+      csvContent += totalRow + "\n";
+
+      folder.file("Report.csv", csvContent);
+      
+      const content = await zip.generateAsync({ type: "blob" });
+      const url = URL.createObjectURL(content);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${folderName}.zip`;
+      a.click();
+
+      if (isNewReport) {
+         for (const r of receiptsList) {
+           await updateDoc(doc(db, "receipts", r.id), { status: "Archived" });
+         }
+         fetchData(); 
+      }
+
+      setMessage({ text: "הדו״ח ירד בהצלחה! 🔥", type: "success" });
+      setTimeout(() => setMessage({ text: "", type: "" }), 3000);
+    } catch (error) {
+      setMessage({ text: "שגיאה ביצירת הדו״ח.", type: "error" });
+    } finally {
+      setIsExporting(false);
+    }
+  };
 
         csvContent += row + "\n";
 
